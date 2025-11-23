@@ -1,0 +1,3 @@
+python-oqs>=0.8.0
+psutil>=5.9.0
+
