@@ -140,10 +140,13 @@ class PerfCounter:
             try:
                 # read initial counter
                 before = self._read_fd(fd)
+                t0 = time.perf_counter()
                 retval = func(*args, **kwargs)
+                t1 = time.perf_counter()
                 after = self._read_fd(fd)
                 cycles = after - before
-                return cycles, retval
+                elapsed = t1 - t0
+                return cycles, retval, elapsed
             finally:
                 try:
                     os.close(fd)
@@ -173,9 +176,10 @@ class PerfCounter:
                 freq = None
         if not freq:
             # Fallback: assume 2.5 GHz
+            print("Fallback cycle counter used")
             freq = 2.5e9
         cycles = int(elapsed * freq)
-        return cycles, retval
+        return cycles, retval, elapsed
 
 
 # Convenience function

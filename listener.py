@@ -85,22 +85,28 @@ def handle_connection(conn: socket.socket, addr, arch: typing.Optional[str] = No
     try:
         with oqs.Signature(scheme) as verifier:
             pc = PerfCounter(arch=arch)
-            verify_cycles, _ = pc.measure_callable(verifier.verify, data, signature, public_key)
-
-            # For memory/time we also run a timed sample to record wall time and PSS delta
             mem_before = get_pss_for_proc()
-            t0 = time.perf_counter()
             try:
-                verifier.verify(data, signature, public_key)
+                verify_cycles, _ret, verify_time = pc.measure_callable(
+                    verifier.verify, data, signature, public_key
+                )
                 verified = True
                 message = "signature valid"
             except Exception:
+                # verification failed (invalid signature)
                 verified = False
                 message = "signature invalid"
-            t1 = time.perf_counter()
+                # try to set verify_cycles/verify_time to 0 if not set
+                try:
+                    verify_cycles
+                except NameError:
+                    verify_cycles = 0
+                try:
+                    verify_time
+                except NameError:
+                    verify_time = 0.0
             mem_after = get_pss_for_proc()
 
-            verify_time = t1 - t0
             verify_mem_delta = mem_after - mem_before
 
             # Print server-side metrics and return them to caller
