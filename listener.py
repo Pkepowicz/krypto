@@ -12,7 +12,9 @@ import socket
 import struct
 import sys
 import time
+import typing
 import psutil
+from perf_counter import PerfCounter
 
 try:
     import oqs
@@ -56,7 +58,7 @@ def send_message(conn: socket.socket, obj: dict) -> None:
     conn.sendall(header + data)
 
 
-def handle_connection(conn: socket.socket, addr) -> None:
+def handle_connection(conn: socket.socket, addr, arch: typing.Optional[str] = None) -> None:
     try:
         msg = recv_message(conn)
     except Exception as e:
@@ -82,6 +84,10 @@ def handle_connection(conn: socket.socket, addr) -> None:
 
     try:
         with oqs.Signature(scheme) as verifier:
+            pc = PerfCounter(arch=arch)
+            verify_cycles, _ = pc.measure_callable(verifier.verify, data, signature, public_key)
+
+            # For memory/time we also run a timed sample to record wall time and PSS delta
             mem_before = get_pss_for_proc()
             t0 = time.perf_counter()
             try:
@@ -98,18 +104,19 @@ def handle_connection(conn: socket.socket, addr) -> None:
             verify_mem_delta = mem_after - mem_before
 
             # Print server-side metrics and return them to caller
-            print(f"Verified={verified} addr={addr} time={verify_time:.6f}s pss_delta={verify_mem_delta}")
+            print(f"Verified={verified} addr={addr} time={verify_time:.6f}s pss_delta={verify_mem_delta} cycles={verify_cycles}")
             send_message(conn, {
                 "verified": verified,
                 "message": message,
                 "verify_time_s": verify_time,
                 "verify_pss_delta": verify_mem_delta,
+                "verify_cycles": verify_cycles,
             })
     except Exception as e:
         send_message(conn, {"verified": False, "message": f"verifier error: {e}"})
 
 
-def run_server(host: str, port: int):
+def run_server(host: str, port: int, arch: typing.Optional[str] = None):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((host, port))
@@ -120,7 +127,7 @@ def run_server(host: str, port: int):
             with conn:
                 print(f"Connection from {addr}")
                 try:
-                    handle_connection(conn, addr)
+                    handle_connection(conn, addr, arch=arch)
                 except Exception as e:
                     print(f"Error handling connection {addr}: {e}")
 
@@ -129,9 +136,10 @@ def main():
     parser = argparse.ArgumentParser(description="OQS signature listener/verifier")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=9000)
+    parser.add_argument("--arch", default=None, help="Override architecture for perf counter (x86_64, armv7, armv8)")
     args = parser.parse_args()
 
-    run_server(args.host, args.port)
+    run_server(args.host, args.port, arch=args.arch)
 
 
 if __name__ == "__main__":

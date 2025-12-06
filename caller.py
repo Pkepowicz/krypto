@@ -18,6 +18,7 @@ import struct
 import sys
 import time
 import psutil
+from perf_counter import PerfCounter
 
 try:
     import oqs
@@ -71,6 +72,7 @@ def main():
     parser.add_argument("--port", type=int, default=9000)
     parser.add_argument("--file", default="example.txt", help="File to sign and send")
     parser.add_argument("--scheme", default="Dilithium2", help="Signature scheme (default: %(default)s)")
+    parser.add_argument("--arch", default=None, help="Override architecture for perf counter (x86_64, armv7, armv8)")
     args = parser.parse_args()
 
     with open(args.file, "rb") as f:
@@ -89,13 +91,34 @@ def main():
             pass
         return proc.memory_info().rss
 
+    pc = PerfCounter(arch=args.arch)
+
+    # We'll measure key generation and signing separately. Create signer first.
+    signer = oqs.Signature(args.scheme)
+
+    # Key generation cycles
+    gen_cycles, pub = pc.measure_callable(signer.generate_keypair)
+
+    # Signing cycles (use the same signer)
+    sign_cycles, sig = pc.measure_callable(signer.sign, data)
+
+    # signer.close()
+
+    # Memory delta around sign (we measure before/after the combined operation)
     mem_before = get_pss()
-    t0 = time.perf_counter()
-    pub, sig = sign_bytes(data, args.scheme)
-    t1 = time.perf_counter()
+    # already measured the sign operation for cycles; we run a tiny sign to capture memory delta
+    _ = None
+    try:
+        t0 = time.perf_counter()
+        # perform sign again to capture memory delta (fast)
+        with oqs.Signature(args.scheme) as _s:
+            _ = _s.sign(data)
+        t1 = time.perf_counter()
+    except Exception:
+        t0 = time.perf_counter(); t1 = t0
     mem_after = get_pss()
 
-    sign_time = t1 - t0
+    sign_time = (t1 - t0)
     sign_mem_delta = mem_after - mem_before
 
     payload = {
@@ -105,20 +128,34 @@ def main():
         "public_key": base64.b64encode(pub).decode("ascii"),
     }
 
-    # Send and wait for response
-    t_net0 = time.perf_counter()
-    with socket.create_connection((args.host, args.port), timeout=10) as conn:
-        send_message(conn, payload)
-        resp = recv_message(conn)
-    t_net1 = time.perf_counter()
+    # Send and wait for response; measure cycles spent in send+recv in-process
+    def send_and_recv():
+        with socket.create_connection((args.host, args.port), timeout=10) as conn:
+            send_message(conn, payload)
+            return recv_message(conn)
 
-    net_time = t_net1 - t_net0
+    net_cycles, resp = pc.measure_callable(send_and_recv)
+    # We also capture wall-clock network time
+    net_time = None
+    try:
+        t_net0 = time.perf_counter()
+        # do a simple connect/send/recv for timing purposes (we already performed it above)
+        with socket.create_connection((args.host, args.port), timeout=10) as conn:
+            send_message(conn, payload)
+            _ = recv_message(conn)
+        t_net1 = time.perf_counter()
+        net_time = t_net1 - t_net0
+    except Exception:
+        net_time = 0.0
 
     # Print measurements
     print("== Caller measurements ==")
-    print(f"Sign time: {sign_time:.6f} s")
+    print(f"Keygen cycles: {gen_cycles}")
+    print(f"Sign cycles: {sign_cycles}")
+    print(f"Sign wall time (sample run): {sign_time:.6f} s")
     print(f"Sign memory delta (pss or rss): {format_bytes(sign_mem_delta)}")
-    print(f"Network roundtrip time (send+recv): {net_time:.6f} s")
+    print(f"Network cycles (send+recv): {net_cycles}")
+    print(f"Network roundtrip time (send+recv sample): {net_time:.6f} s")
     print("")
     print("Verifier response:")
     print(json.dumps(resp, indent=2))
