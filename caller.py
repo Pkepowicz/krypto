@@ -76,6 +76,7 @@ def main():
     parser.add_argument("--csv", default="metrics.csv", help="CSV file to append metrics to")
     parser.add_argument("--run", type=int, default=1, help="Run number to record in CSV")
     parser.add_argument("--rounds", type=int, default=1, help="Number of rounds to perform (default: 1)")
+    parser.add_argument("--net-timeout", type=float, default=10.0, help="Connection timeout seconds for establishing TCP connection (transfer will be blocking by default)")
     args = parser.parse_args()
 
     with open(args.file, "rb") as f:
@@ -120,13 +121,20 @@ def main():
             "public_key": base64.b64encode(pub).decode("ascii"),
         }
 
-        # Send and wait for response; measure cycles and elapsed for send+recv
+        # Send and wait for response (do not measure send/recv time)
         def send_and_recv():
-            with socket.create_connection((args.host, args.port), timeout=10) as conn:
+            # Use a connect timeout, but clear the socket timeout after connect so
+            # large transfers won't fail due to a short timeout.
+            conn = socket.create_connection((args.host, args.port), timeout=args.net_timeout)
+            try:
+                # allow blocking IO for the data transfer itself
+                conn.settimeout(None)
                 send_message(conn, payload)
                 return recv_message(conn)
+            finally:
+                conn.close()
 
-        net_cycles, resp, net_time = pc.measure_callable(send_and_recv)
+        resp = send_and_recv()
 
         # Print measurements for this round
         print(f"== Caller measurements (run {runnum}) ==")
@@ -134,8 +142,7 @@ def main():
         print(f"Keygen cycles: {gen_cycles}")
         print(f"Sign time: {sign_time:.6f} s")
         print(f"Sign cycles: {sign_cycles}")
-        print(f"Network cycles (send+recv): {net_cycles}")
-        print(f"Network roundtrip time (send+recv): {net_time:.6f} s")
+        # Network send/recv timing is intentionally not measured here.
         print("")
         print("Verifier response:")
         print(json.dumps(resp, indent=2))
